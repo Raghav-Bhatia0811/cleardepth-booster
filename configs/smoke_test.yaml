@@ -1,0 +1,21 @@
+# Smoke test overrides — tiny resolution for local GPU testing
+# This file OVERRIDES values from the other configs
+
+defaults:
+  - model: cleardepth          # Load architecture from model/cleardepth.yaml
+  - training: default          # Load training params from training/default.yaml
+
+# Override training params for local testing
+training:
+  batch_size: 1                # Single image at a time
+  num_workers: 0               # No parallel loading (avoids Windows issues)
+  image_height: 64             # Tiny resolution
+  image_width: 128             # Tiny resolution
+  max_steps: 10                # Just 10 steps to verify it runs
+  log_interval: 1              # Log every step during smoke test
+
+# Override GRU iterations (fewer = faster)
+model:
+  gru:
+    n_gru_iters: 3             # Just 3 iterations instead of 22
+    n_gru_iters_eval: 3        # Same for eval

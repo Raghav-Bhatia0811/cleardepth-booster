@@ -1,0 +1,10 @@
+ __pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+cleardepth.egg-info/
+*.egg-info/
+.hydra/
+outputs/
+wandb/
+*.pt

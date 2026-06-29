@@ -1,0 +1,21 @@
+# configs/data/sceneflow.yaml
+data:
+  # Root folder containing Monkaa/ and FlyingThings3D/ subfolders
+  root: "C:/Users/ragha/Downloads/Sampler/Sampler"
+
+  # Which subsets to use
+  subsets:
+    - Monkaa
+    - FlyingThings3D
+
+  # Image pass to use
+  pass_name: "RGB_cleanpass"
+
+  # Image resolution
+  height: 360
+  width: 720
+
+  # Dataloader settings
+  batch_size: 1
+  num_workers: 0
+  augment: false

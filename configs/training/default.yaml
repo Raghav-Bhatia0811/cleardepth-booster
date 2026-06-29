@@ -1,0 +1,29 @@
+# Training hyperparameters (from paper Section IV-A)
+
+# Optimizer
+optimizer: adamw              # AdamW = Adam + weight decay (prevents overfitting)
+lr: 0.0002                    # Initial learning rate
+weight_decay: 0.00001         # L2 regularization strength
+eps: 0.00000001               # Numerical stability term (1e-8)
+
+# Learning rate schedule
+scheduler: onecycle            # OneCycleLR — ramps up then down
+lr_final: 0.0001              # Final learning rate when training ends
+
+# Training duration
+max_steps: 300000             # Total training steps (300K as per paper)
+warmup_steps: 5000            # Gradually increase LR for first 5K steps
+
+# Data loading
+batch_size: 8                 # Batch size (paper uses 8 on A6000)
+num_workers: 4                # Parallel data loading threads
+image_height: 360             # Input image height
+image_width: 720              # Input image width
+
+# Loss
+loss_gamma: 0.9               # Sequence loss weight decay factor γ
+
+# Logging
+log_interval: 100             # Print loss every N steps
+save_interval: 10000          # Save checkpoint every N steps
+wandb_project: cleardepth     # Weights & Biases project name

@@ -1,0 +1,38 @@
+# Architecture hyperparameters for ClearDepth
+# All values derived from paper Section III-B, III-C, IV-A and the config intent.
+
+backbone:
+  in_channels: 3               # RGB input
+  embed_dim: 64                # Base channel dim C; stages use C, 2C, 4C, 8C
+  embed_dims: [64, 128, 256, 512]  # Per-stage dims (derived from embed_dim)
+
+  # Transformer blocks
+  depths: [2, 2, 2, 2]         # ViT blocks per stage
+  num_heads: [1, 2, 4, 8]      # Attention heads per stage
+  reduction_ratios: [8, 4, 2, 1]   # Sequence reduction R per stage
+  mlp_ratio: 4.0               # MixFFN hidden = mlp_ratio × stage_dim
+  drop_rate: 0.0
+  drop_path_rate: 0.1          # Stochastic depth
+
+  # Multi-scale feature fusion output (paper intent: 256 channels)
+  fuse_out_channels: 256       # 1×1 conv projects 960 → 256 after concat
+
+# GRU-based iterative refinement
+gru:
+  hidden_dim: 128              # GRU hidden state dimension
+  n_gru_iters: 22              # Iterations during training  (paper: 22)
+  n_gru_iters_eval: 32         # Iterations at test time     (paper: 32)
+  n_gru_layers: 3              # Multi-scale GRU levels (1/8, 1/16, 1/32)
+
+# Correlation pyramid
+correlation:
+  num_levels: 4                # Pyramid levels
+  radius: 4                    # Search radius per level (2r+1=9 values per level)
+  # Total corr channels = num_levels × (2×radius+1) = 36
+
+# Disparity
+max_disp: 192                  # Maximum valid disparity in pixels
+
+# Upsampling (inference only)
+upsample:
+  scale: 4                     # Convex upsample factor (1/4-scale → full-res)
