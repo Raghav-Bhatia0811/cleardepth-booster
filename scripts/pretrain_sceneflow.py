@@ -1,45 +1,48 @@
 """
-scripts/train_booster.py
-========================
-Fine-tune ClearDepthNet on the Booster transparent-object stereo dataset.
+scripts/pretrain_sceneflow.py
+==============================
+Pretrain ClearDepthNet on the Monkaa subset of Scene Flow, before
+fine-tuning on Booster (see scripts/train_booster.py).
 
-Key design choices aligned with the updated model:
-  - ClearDepthNet now includes fuse_out_channels and ConvexUpsample;
-    all parameters are loaded from configs/model/cleardepth.yaml.
+Near-identical to train_booster.py, with two differences:
+  - Dataset is SceneFlowMonkaaDataset (no validity mask — Scene Flow
+    disparity is dense/synthetic, sanitized to 0 for invalid pixels
+    inside the dataset's PFM reader).
+  - Checkpoints are written to a separate directory (e.g.
+    /data/sceneflow_checkpoints) so they don't collide with Booster
+    fine-tuning checkpoints. The resulting best.pt / latest.pt is
+    loadable directly via train_booster.py's --resume flag, since
+    both scripts build an identical ClearDepthNet from the same
+    configs/model/cleardepth.yaml.
+
+Aligned with the updated model:
+  - ClearDepthNet includes fuse_out_channels and ConvexUpsample; all
+    parameters are loaded from configs/model/cleardepth.yaml.
   - training forward: returns a list of 1/4-scale disparity predictions.
   - GT is downsampled to 1/4 scale and divided by 4 before loss:
         gt_q = F.interpolate(gt, (H/4, W/4), mode='nearest') / 4
-  - mask_00.png invalid pixels are zeroed in GT so SequenceLoss's
-    (gt > 0) filter naturally excludes them.
   - Validation: last prediction at 1/4 scale vs downsampled GT (fast).
   - Checkpoints: best.pt (lowest val AvgErr), latest.pt, step_XXXXXX.pt.
-  - MiT-B1 pretrained backbone weights optional via --pretrained flag.
-  - Two distinct ways to seed a run from an existing checkpoint:
-      --resume <ckpt>    : CONTINUE an interrupted Booster run — restores
-                            step counter, optimiser, and LR schedule.
-      --init_from <ckpt> : INITIALISE weights from another run (e.g. a
-                            pretrain_sceneflow.py checkpoint) for
-                            fine-tuning — step counter and LR schedule
-                            start fresh, sized for this run's own
-                            --max_steps. Use this after Scene Flow
-                            pretraining.
+  - MiT-B1 pretrained backbone weights optional via --pretrained flag
+    (useful as an additional ImageNet warm-start before Scene Flow
+    pretraining).
 
-Run (fresh fine-tune from a Scene Flow pretrained checkpoint):
+Run:
     conda activate cleardepth
     cd /path/to/cleardepth
-    python scripts/train_booster.py \\
-        --data_root /data/booster_gt \\
+    python scripts/pretrain_sceneflow.py \\
+        --data_root /data/monkaa \\
         --batch_size 4 \\
-        --max_steps 50000 \\
+        --max_steps 300000 \\
         --n_gru_iters 22 \\
-        --init_from /data/sceneflow_checkpoints/best.pt \\
-        --ckpt_dir checkpoints/booster
+        --pretrained \\
+        --ckpt_dir /data/sceneflow_checkpoints
 
-Run (continue an interrupted Booster run):
+Then fine-tune on Booster (--init_from seeds weights only; step counter
+and LR schedule start fresh for the Booster run's own --max_steps):
     python scripts/train_booster.py \\
         --data_root /data/booster_gt \\
-        --max_steps 50000 \\
-        --resume checkpoints/booster/latest.pt \\
+        --init_from /data/sceneflow_checkpoints/best.pt \\
         --ckpt_dir checkpoints/booster
 
 For T4 (16 GB VRAM) set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -68,7 +71,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from omegaconf import OmegaConf
 
-from cleardepth.data.booster import BoosterDataset
+from cleardepth.data.sceneflow_monkaa import SceneFlowMonkaaDataset
 from cleardepth.models.cleardepth_net import ClearDepthNet
 from cleardepth.loss.sequence_loss import SequenceLoss
 from cleardepth.evaluation.metrics import (
@@ -82,12 +85,13 @@ log = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description='Fine-tune ClearDepth on the Booster dataset',
+        description='Pretrain ClearDepth on Scene Flow (Monkaa)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     # Data
     p.add_argument('--data_root', required=True,
-                   help='Path to Booster root, e.g. /data/booster_gt')
+                   help='Path to Monkaa root, e.g. /data/monkaa '
+                        '(expects frames_cleanpass/ and disparity/ subdirs)')
     p.add_argument('--height', type=int, default=360)
     p.add_argument('--width',  type=int, default=720)
     p.add_argument('--val_fraction', type=float, default=0.15)
@@ -99,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--batch_size',   type=int,   default=4)
     p.add_argument('--num_workers',  type=int,   default=None,
                    help='DataLoader workers. Default: 0 on Windows, 4 on Linux.')
-    p.add_argument('--max_steps',    type=int,   default=50_000)
+    p.add_argument('--max_steps',    type=int,   default=300_000)
     p.add_argument('--n_gru_iters',  type=int,   default=None,
                    help='GRU iterations per step. Defaults to config value.')
     p.add_argument('--lr',           type=float, default=2e-4)
@@ -115,31 +119,19 @@ def parse_args() -> argparse.Namespace:
                    help='Load MiT-B1 ImageNet-1k weights before training.')
 
     # Checkpoints
-    p.add_argument('--ckpt_dir',  default='checkpoints/booster')
+    p.add_argument('--ckpt_dir',  default='/data/sceneflow_checkpoints',
+                   help='Separate checkpoint dir from Booster fine-tuning. '
+                        'best.pt / latest.pt here are loadable via '
+                        'train_booster.py --resume.')
     p.add_argument('--save_every', type=int, default=5_000,
                    help='Save checkpoint and run validation every N steps.')
     p.add_argument('--resume',    default=None,
-                   help='Path to a Booster checkpoint to CONTINUE an '
-                        'interrupted run from — restores step counter, '
-                        'optimiser, and LR schedule state.')
-    p.add_argument('--init_from', default=None,
-                   help='Path to a checkpoint (e.g. from '
-                        'pretrain_sceneflow.py) to INITIALISE model '
-                        'weights from for fine-tuning. Step counter, '
-                        'optimiser, and LR schedule start fresh, sized '
-                        'for this run\'s own --max_steps. Mutually '
-                        'exclusive with --resume.')
+                   help='Path to checkpoint to resume from.')
 
     # Logging
     p.add_argument('--log_every', type=int, default=100)
 
-    args = p.parse_args()
-    if args.resume and args.init_from:
-        p.error('--resume and --init_from are mutually exclusive: '
-                '--resume continues this run\'s own step/schedule state, '
-                '--init_from starts a fresh run seeded with another '
-                'checkpoint\'s weights.')
-    return args
+    return p.parse_args()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -177,31 +169,27 @@ def make_loader(dataset, batch_size: int, num_workers: int,
     )
 
 
-def downsample_gt(gt: torch.Tensor, mask: torch.Tensor,
-                  target_h: int, target_w: int):
+def downsample_gt(gt: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
     """
-    Downsample GT disparity and mask to the 1/4-scale feature resolution.
+    Downsample GT disparity to the 1/4-scale feature resolution.
 
     Args:
-        gt, mask : (B, 1, H, W) at full training resolution.
+        gt : (B, 1, H, W) at full training resolution.
         target_h, target_w : target spatial size (typically H/4, W/4).
 
     Returns:
-        gt_q   : (B, 1, target_h, target_w) in 1/4-pixel units.
-        mask_q : (B, 1, target_h, target_w) binary float.
+        gt_q : (B, 1, target_h, target_w) in target-resolution pixel units.
 
-    GT disparity is scaled by (target_w / W) so values remain in
-    units of pixels at the *output* resolution.
+    No mask is applied here — Scene Flow disparity is dense synthetic
+    ground truth; invalid/occluded pixels were already sanitized to 0
+    by SceneFlowMonkaaDataset's PFM reader, and SequenceLoss's
+    valid = (gt > 0) filter excludes them naturally.
     """
     W = gt.shape[-1]
-    disp_scale = target_w / W                        # e.g. 0.25 for 1/4 scale
-    gt_q = F.interpolate(
+    disp_scale = target_w / W   # e.g. 0.25 for 1/4 scale
+    return F.interpolate(
         gt, size=(target_h, target_w), mode='nearest'
     ) * disp_scale
-    mask_q = F.interpolate(
-        mask.float(), size=(target_h, target_w), mode='nearest'
-    )
-    return gt_q, mask_q
 
 
 def save_ckpt(path: str, step: int, model, optimizer, scheduler,
@@ -226,24 +214,6 @@ def load_ckpt(path: str, model, optimizer, scheduler, device):
     return step, best_val_err
 
 
-def load_weights_only(path: str, model, device):
-    """
-    Load only the model weights from a checkpoint (e.g. produced by
-    pretrain_sceneflow.py). Used for fine-tune initialisation, where the
-    source checkpoint's step counter and LR schedule belong to a
-    different training run (different max_steps) and must NOT carry
-    over — only the learned weights should transfer.
-    """
-    ckpt = torch.load(path, map_location=device, weights_only=True)
-    model.load_state_dict(ckpt['model_state'])
-    src_step = ckpt.get('step', '?')
-    log.info(
-        f"Initialised model weights from {path} "
-        f"(source checkpoint was at step {src_step}; "
-        f"this run starts fresh at step 0)."
-    )
-
-
 # ── Validation ─────────────────────────────────────────────────────────────
 
 @torch.no_grad()
@@ -260,20 +230,16 @@ def validate(model, val_loader, device: torch.device,
         left  = batch['left'].to(device)
         right = batch['right'].to(device)
         gt    = batch['disparity'].to(device)
-        mask  = batch['mask'].to(device)
 
         # Forward: last prediction at 1/4 scale
         preds = model(left, right, n_iters=n_gru_iters, test_mode=False)
         pred_q = preds[-1]
 
         _, _, H_q, W_q = pred_q.shape
-        gt_q, mask_q = downsample_gt(gt, mask, H_q, W_q)
-
-        # Apply mask: zero out invalid pixels (excluded by > 0 in compute_metrics)
-        gt_masked = gt_q * mask_q
+        gt_q = downsample_gt(gt, H_q, W_q)
 
         max_disp_q = max_disp * (W_q / gt.shape[-1])
-        m = compute_metrics(pred_q, gt_masked, max_disp=max_disp_q)
+        m = compute_metrics(pred_q, gt_q, max_disp=max_disp_q)
         all_metrics.append(m)
 
     model.train()
@@ -300,7 +266,7 @@ def train(args: argparse.Namespace):
     log.info(f"DataLoader num_workers={num_workers}")
 
     # ── Datasets ──────────────────────────────────────────────────────────
-    train_ds = BoosterDataset(
+    train_ds = SceneFlowMonkaaDataset(
         args.data_root,
         split        = 'train',
         height       = args.height,
@@ -310,7 +276,7 @@ def train(args: argparse.Namespace):
         val_fraction = args.val_fraction,
         seed         = args.seed,
     )
-    val_ds = BoosterDataset(
+    val_ds = SceneFlowMonkaaDataset(
         args.data_root,
         split        = 'val',
         height       = args.height,
@@ -342,13 +308,6 @@ def train(args: argparse.Namespace):
         from cleardepth.models.backbone.pretrained import load_pretrained_encoders
         log.info("Loading MiT-B1 ImageNet-1k pretrained weights ...")
         load_pretrained_encoders(model.feature_encoder, model.context_encoder)
-
-    # ── Fine-tune initialisation (e.g. from pretrain_sceneflow.py) ────────
-    # Weights only — step counter and LR schedule are NOT inherited, since
-    # the source checkpoint belongs to a different training run with its
-    # own max_steps. Mutually exclusive with --resume (validated below).
-    if args.init_from:
-        load_weights_only(args.init_from, model, device)
 
     # ── Loss ──────────────────────────────────────────────────────────────
     loss_fn = SequenceLoss(gamma=args.gamma, max_disp=max_disp / 4.0)
@@ -383,7 +342,7 @@ def train(args: argparse.Namespace):
     model.train()
     step_times: list = []
 
-    log.info(f"Training for {args.max_steps} steps ...")
+    log.info(f"Pretraining for {args.max_steps} steps ...")
     log.info("-" * 70)
 
     while global_step < args.max_steps:
@@ -396,21 +355,16 @@ def train(args: argparse.Namespace):
             left  = batch['left'].to(device)
             right = batch['right'].to(device)
             gt    = batch['disparity'].to(device)   # (B, 1, H, W) full-res
-            mask  = batch['mask'].to(device)         # (B, 1, H, W) binary
 
             # ── Forward pass ──────────────────────────────────────────────
             preds = model(left, right, n_iters=n_gru_iters, test_mode=False)
 
             # ── GT alignment: 1/4 scale + divide values by 4 ─────────────
             _, _, H_q, W_q = preds[0].shape
-            gt_q, mask_q   = downsample_gt(gt, mask, H_q, W_q)
-
-            # Mask out invalid pixels by zeroing GT there.
-            # SequenceLoss filters valid = (gt > 0), so zeros are excluded.
-            gt_masked = gt_q * mask_q
+            gt_q = downsample_gt(gt, H_q, W_q)
 
             # ── Sequence loss ─────────────────────────────────────────────
-            loss = loss_fn(preds, gt_masked)
+            loss = loss_fn(preds, gt_q)
 
             # ── Backward ──────────────────────────────────────────────────
             optimizer.zero_grad()
@@ -481,7 +435,13 @@ def train(args: argparse.Namespace):
         os.path.join(args.ckpt_dir, 'latest.pt'),
         global_step, model, optimizer, scheduler, best_val_err,
     )
-    log.info(f"Training complete. Best val AvgErr={best_val_err:.4f}")
+    log.info(f"Pretraining complete. Best val AvgErr={best_val_err:.4f}")
+    log.info(
+        f"To fine-tune on Booster, run:\n"
+        f"  python scripts/train_booster.py --data_root <booster_root> "
+        f"--init_from {os.path.join(args.ckpt_dir, 'best.pt')} "
+        f"--ckpt_dir checkpoints/booster"
+    )
 
 
 # ── Entry point ────────────────────────────────────────────────────────────
