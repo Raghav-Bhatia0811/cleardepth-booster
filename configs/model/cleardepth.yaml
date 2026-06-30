@@ -35,4 +35,4 @@ max_disp: 192                  # Maximum valid disparity in pixels
 
 # Upsampling (inference only)
 upsample:
-  scale: 4                     # Convex upsample factor (1/4-scale → full-res)
+  scale: 4                     # Bilinear upsample factor (1/4-scale → full-res)

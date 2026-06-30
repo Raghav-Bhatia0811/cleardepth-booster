@@ -202,9 +202,6 @@ class PostFusionGRU(nn.Module):
             disp_preds       : List of disparity predictions, one per iteration.
                                Each is (B, 1, H, W) at the 1/4-scale feature resolution.
                                Used by the sequence loss (all iterations matter).
-            finest_hidden    : Final hidden state at the finest GRU scale (H/2, W/2
-                               of feature maps). Used by ConvexUpsample in ClearDepthNet
-                               to produce full-resolution disparity at inference time.
         """
         B, C, H, W = feat_left.shape
 
@@ -299,9 +296,7 @@ class PostFusionGRU(nn.Module):
             disparity = disparity + delta_d_full
             disp_preds.append(disparity)
 
-        # Expose the finest-scale hidden state from the last iteration.
-        # ClearDepthNet uses this to predict the convex upsample mask.
-        return disp_preds, hidden_states[0]
+        return disp_preds
 
 
 # ---------------------------------------------------------------------------
@@ -324,14 +319,11 @@ if __name__ == "__main__":
     c_r = torch.randn(B, HIDDEN, H, W)
     c_h = torch.randn(B, HIDDEN, H, W)
 
-    preds, finest_h = gru(feat_l, feat_r, c_k, c_r, c_h, corr_fn, n_iters=N_ITERS)
+    preds = gru(feat_l, feat_r, c_k, c_r, c_h, corr_fn, n_iters=N_ITERS)
 
     assert len(preds) == N_ITERS
     for i, d in enumerate(preds):
         assert d.shape == (B, 1, H, W), f"Iter {i}: {tuple(d.shape)}"
-    # scale_shapes[0] = (H, W) — finest GRU scale equals the feature-map resolution
-    assert finest_h.shape == (B, HIDDEN, H, W)
 
     print(f"GRU output: {N_ITERS} predictions, each {list(preds[0].shape)}")
-    print(f"Finest hidden: {list(finest_h.shape)}")
     print("PostFusionGRU smoke test passed.")

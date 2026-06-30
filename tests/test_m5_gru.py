@@ -135,30 +135,26 @@ class TestPostFusionGRU:
 
     def test_prediction_count(self):
         """Must return exactly n_iters predictions."""
-        # PostFusionGRU returns (disp_preds, finest_hidden) — the hidden
-        # state is exposed for ConvexUpsample's mask predictor.
         gru = self._make_gru()
         corr_fn, fl, fr, c_k, c_r, c_h = self._make_inputs()
         for n in [1, 4, 8]:
-            preds, _ = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=n)
+            preds = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=n)
             assert len(preds) == n, f"Expected {n} preds, got {len(preds)}"
 
     def test_prediction_shapes(self):
         """Each prediction must be (B, 1, H_feat, W_feat)."""
         gru = self._make_gru()
         corr_fn, fl, fr, c_k, c_r, c_h = self._make_inputs()
-        preds, finest_hidden = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
+        preds = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
         for i, d in enumerate(preds):
             assert d.shape == (BATCH, 1, H_FEAT, W_FEAT), \
                 f"Iter {i}: expected ({BATCH}, 1, {H_FEAT}, {W_FEAT}), got {tuple(d.shape)}"
-        # Finest GRU scale equals the feature-map resolution (H_FEAT, W_FEAT)
-        assert finest_hidden.shape == (BATCH, HIDDEN_DIM, H_FEAT, W_FEAT)
 
     def test_disparity_changes_over_iterations(self):
         """Disparity estimates must change across iterations."""
         gru = self._make_gru()
         corr_fn, fl, fr, c_k, c_r, c_h = self._make_inputs()
-        preds, _ = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
+        preds = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
         assert not torch.allclose(preds[0], preds[-1]), \
             "Disparity unchanged across iterations — GRU not updating"
 
@@ -166,7 +162,7 @@ class TestPostFusionGRU:
         """All predictions must be finite."""
         gru = self._make_gru()
         corr_fn, fl, fr, c_k, c_r, c_h = self._make_inputs()
-        preds, _ = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
+        preds = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=4)
         for i, d in enumerate(preds):
             assert not torch.isnan(d).any(), f"NaN in iteration {i}"
             assert not torch.isinf(d).any(), f"Inf in iteration {i}"
@@ -177,7 +173,7 @@ class TestPostFusionGRU:
         corr_fn, fl, fr, c_k, c_r, c_h = self._make_inputs()
         fl.requires_grad_(True)
         c_k.requires_grad_(True)
-        preds, _ = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=3)
+        preds = gru(fl, fr, c_k, c_r, c_h, corr_fn, n_iters=3)
         # Sum all predictions for loss (like sequence loss does)
         loss = sum(p.mean() for p in preds)
         loss.backward()

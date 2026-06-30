@@ -16,8 +16,10 @@ Near-identical to train_booster.py, with two differences:
     configs/model/cleardepth.yaml.
 
 Aligned with the updated model:
-  - ClearDepthNet includes fuse_out_channels and ConvexUpsample; all
-    parameters are loaded from configs/model/cleardepth.yaml.
+  - ClearDepthNet includes fuse_out_channels; all parameters are loaded
+    from configs/model/cleardepth.yaml. Inference-time upsampling is
+    plain bilinear x4 (paper + Architecture Report), not a learned
+    convex upsample.
   - training forward: returns a list of 1/4-scale disparity predictions.
   - GT is downsampled to 1/4 scale and divided by 4 before loss:
         gt_q = F.interpolate(gt, (H/4, W/4), mode='nearest') / 4
@@ -221,7 +223,9 @@ def validate(model, val_loader, device: torch.device,
              n_gru_iters: int, max_disp: float) -> dict:
     """
     Quick validation using the last 1/4-scale GRU prediction.
-    Uses test_mode=False to skip convex upsample overhead.
+    Uses test_mode=False so metrics are computed directly against the
+    same 1/4-scale GT used for the training loss, without an extra
+    upsample/downsample round-trip.
     """
     model.eval()
     all_metrics = []
@@ -299,7 +303,6 @@ def train(args: argparse.Namespace):
         f"Parameters — feature_encoder={counts['feature_encoder']:,}  "
         f"context_encoder={counts['context_encoder']:,}  "
         f"gru={counts['gru']:,}  "
-        f"convex_upsample={counts['convex_upsample']:,}  "
         f"total={counts['total']:,}"
     )
 

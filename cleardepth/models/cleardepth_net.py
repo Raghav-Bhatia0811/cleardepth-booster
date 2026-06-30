@@ -6,14 +6,19 @@ Wires together all components into one end-to-end stereo depth network.
 Forward pass:
   1. FeatureEncoder  → feat_left, feat_right  (appearance features, shared weights)
   2. ContextEncoder  → c_k, c_r, c_h          (structural priors from left only)
-  3. PostFusionGRU   → [d_1, ..., d_N], h_0   (iterative refinement + finest hidden)
-  4. ConvexUpsample  → d_full_res             (inference only: 1/4 → full resolution)
+  3. PostFusionGRU   → [d_1, ..., d_N]        (iterative refinement)
+  4. Bilinear ×4     → d_full_res             (inference only: 1/4 → full resolution)
 
 Training (test_mode=False):
   Returns all N disparity predictions at 1/4-scale for sequence loss.
 
 Inference (test_mode=True):
-  Returns only the final full-resolution prediction via convex upsampling.
+  Returns only the final prediction, bilinearly upsampled ×4 to full resolution.
+  Per the project's Architecture Report ("Inference Path — Only final
+  prediction d_22 used, bilinear upsampled 4x to full HxW"). The paper's
+  Eqs 12-15 and the architecture report do not describe any learned
+  upsampling module — a convex/RAFT-Stereo-style upsample was tried here
+  earlier but had no basis in either source document and has been removed.
 
 Paper reference: Fig. 2, Section III overall
 """
@@ -27,7 +32,6 @@ from .encoders.feature_encoder import FeatureEncoder
 from .encoders.context_encoder import ContextEncoder
 from .correlation.correlation_pyramid import CorrelationPyramid
 from .gru.post_fusion_gru import PostFusionGRU
-from .upsample.convex_upsample import ConvexUpsample
 
 
 class ClearDepthNet(nn.Module):
@@ -57,7 +61,7 @@ class ClearDepthNet(nn.Module):
         corr_radius      : Search radius per level (default 4).
 
         # Upsampling
-        upsample_scale   : Factor to upsample from 1/4 to full res (default 4).
+        upsample_scale   : Bilinear upsample factor, 1/4 -> full res (default 4).
     """
 
     def __init__(
@@ -84,7 +88,8 @@ class ClearDepthNet(nn.Module):
     ):
         super().__init__()
 
-        self.n_gru_iters = n_gru_iters
+        self.n_gru_iters    = n_gru_iters
+        self.upsample_scale = upsample_scale
 
         # ── Feature Encoder ────────────────────────────────────────────────
         # Shared-weight backbone for left + right appearance features
@@ -130,15 +135,6 @@ class ClearDepthNet(nn.Module):
             n_gru_layers=n_gru_layers,
         )
 
-        # ── Convex Upsample ────────────────────────────────────────────────
-        # Upsamples 1/4-scale disparity to full resolution at inference.
-        # The mask is predicted from the GRU's finest-scale hidden state
-        # (upsampled to 1/4 to match the disparity resolution).
-        self.convex_upsample = ConvexUpsample(
-            hidden_dim=hidden_dim,
-            scale=upsample_scale,
-        )
-
     def forward(
         self,
         img_left: torch.Tensor,
@@ -153,7 +149,8 @@ class ClearDepthNet(nn.Module):
             img_left  : Left  image (B, 3, H, W). Values in [-1, 1].
             img_right : Right image (B, 3, H, W).
             n_iters   : Override number of GRU iterations (default: self.n_gru_iters).
-            test_mode : If True, apply convex upsampling and return single full-res map.
+            test_mode : If True, bilinearly upsample the final prediction ×4 and
+                        return a single full-res map.
                         If False (training), return all 1/4-scale predictions for loss.
 
         Returns:
@@ -175,7 +172,7 @@ class ClearDepthNet(nn.Module):
         # c_k, c_r, c_h: (B, hidden_dim, H/4, W/4)
 
         # ── Step 3: Iterative GRU refinement ──────────────────────────────
-        disp_predictions, finest_hidden = self.gru(
+        disp_predictions = self.gru(
             feat_left=feat_left,
             feat_right=feat_right,
             c_k=c_k,
@@ -185,18 +182,18 @@ class ClearDepthNet(nn.Module):
             n_iters=n_iters,
         )
         # disp_predictions: list of (B, 1, H_feat, W_feat)
-        # finest_hidden:    (B, hidden_dim, H_feat/2, W_feat/2)
 
         if not test_mode:
             return disp_predictions   # all predictions for sequence loss
 
-        # ── Step 4 (inference only): Convex upsample to full resolution ───
-        # The GRU's finest scale runs at (H_feat, W_feat) = (H/4, W/4), so
-        # finest_hidden is already at the same resolution as final_disp.
+        # ── Step 4 (inference only): bilinear upsample to full resolution ──
+        # Architecture Report: "Inference Path — Only final prediction
+        # used, bilinear upsampled 4x to full HxW".
         final_disp = disp_predictions[-1]   # (B, 1, H/4, W/4)
-
-        # Convex upsample: H/4 → H (4× factor, mask predicted from GRU hidden state)
-        disp_full = self.convex_upsample(final_disp, finest_hidden)
+        disp_full = F.interpolate(
+            final_disp, scale_factor=self.upsample_scale,
+            mode='bilinear', align_corners=False,
+        )
         return disp_full   # (B, 1, H, W)
 
     def param_count(self) -> dict:
@@ -208,7 +205,6 @@ class ClearDepthNet(nn.Module):
             'feature_encoder'  : count(self.feature_encoder),
             'context_encoder'  : count(self.context_encoder),
             'gru'              : count(self.gru),
-            'convex_upsample'  : count(self.convex_upsample),
             'total'            : count(self),
         }
 

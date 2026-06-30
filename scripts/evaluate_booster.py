@@ -5,9 +5,10 @@ Evaluate a trained ClearDepthNet checkpoint on the Booster val split.
 
 What this script does:
   1. Loads a checkpoint (best.pt by default) onto CPU/CUDA.
-  2. Runs test_mode=True inference → full-resolution disparity (H×W).
-     With the updated model this uses ConvexUpsample instead of bilinear,
-     so predictions are already at the target resolution (360×720).
+  2. Runs test_mode=True inference → full-resolution disparity (H×W),
+     via plain bilinear x4 upsampling of the GRU's 1/4-scale output
+     (paper + Architecture Report), so predictions are already at the
+     target resolution (360×720).
   3. Computes paper metrics at full resolution against the 360×720 GT:
        AvgErr | RMS | Bad-0.5 | Bad-1.0 | Bad-2.0 | Bad-4.0
   4. Saves 4-panel PNG figures per sample (left | pred | GT | error).
@@ -264,7 +265,7 @@ def evaluate(args: argparse.Namespace):
 
         with torch.no_grad():
             # test_mode=True → full-resolution disparity (B, 1, H, W)
-            # thanks to ConvexUpsample; no manual rescaling needed
+            # via plain bilinear x4 upsampling; no manual rescaling needed
             pred = model(left, right, n_iters=n_gru_iters, test_mode=True)
 
         B = pred.shape[0]

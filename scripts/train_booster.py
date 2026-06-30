@@ -4,8 +4,12 @@ scripts/train_booster.py
 Fine-tune ClearDepthNet on the Booster transparent-object stereo dataset.
 
 Key design choices aligned with the updated model:
-  - ClearDepthNet now includes fuse_out_channels and ConvexUpsample;
-    all parameters are loaded from configs/model/cleardepth.yaml.
+  - ClearDepthNet now includes fuse_out_channels; all parameters are
+    loaded from configs/model/cleardepth.yaml. Inference-time upsampling
+    (test_mode=True) is plain bilinear x4, per the paper and the
+    project's Architecture Report — a convex/RAFT-Stereo-style learned
+    upsample was tried and removed after review found no basis for it
+    in either source document.
   - training forward: returns a list of 1/4-scale disparity predictions.
   - GT is downsampled to 1/4 scale and divided by 4 before loss:
         gt_q = F.interpolate(gt, (H/4, W/4), mode='nearest') / 4
@@ -251,7 +255,9 @@ def validate(model, val_loader, device: torch.device,
              n_gru_iters: int, max_disp: float) -> dict:
     """
     Quick validation using the last 1/4-scale GRU prediction.
-    Uses test_mode=False to skip convex upsample overhead.
+    Uses test_mode=False so metrics are computed directly against the
+    same 1/4-scale GT used for the training loss, without an extra
+    upsample/downsample round-trip.
     """
     model.eval()
     all_metrics = []
@@ -333,7 +339,6 @@ def train(args: argparse.Namespace):
         f"Parameters — feature_encoder={counts['feature_encoder']:,}  "
         f"context_encoder={counts['context_encoder']:,}  "
         f"gru={counts['gru']:,}  "
-        f"convex_upsample={counts['convex_upsample']:,}  "
         f"total={counts['total']:,}"
     )
 

@@ -3,13 +3,12 @@ scripts/evaluate_sceneflow.py
 ===============================
 Evaluate a Scene Flow (Monkaa) pretraining checkpoint on the val split.
 
-Unlike evaluate_booster.py (which evaluates at full resolution using
-ConvexUpsample via test_mode=True), this script evaluates at 1/4 scale —
-the native GRU output resolution — since pretraining checkpoints are
-optimized for coarse-scale disparity quality, and ConvexUpsample's mask
-predictor is typically undertrained this early in the pipeline. Metrics
-computed here are directly comparable to the training-time validation
-metrics logged by pretrain_sceneflow.py.
+Unlike evaluate_booster.py (which evaluates at full resolution via plain
+bilinear x4 upsampling under test_mode=True), this script evaluates at
+1/4 scale — the native GRU output resolution — so that Scene Flow
+pretraining metrics are directly comparable to the training-time
+validation metrics logged by pretrain_sceneflow.py, without the
+upsampling step's interpolation affecting the numbers.
 
 What this script does:
   1. Loads a checkpoint (best.pt by default).
