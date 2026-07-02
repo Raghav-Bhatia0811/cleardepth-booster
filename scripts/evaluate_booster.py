@@ -4,25 +4,28 @@ scripts/evaluate_booster.py
 Evaluate a trained ClearDepthNet checkpoint on the Booster val split.
 
 What this script does:
-  1. Loads a checkpoint (best.pt by default) onto CPU/CUDA.
-  2. Runs test_mode=True inference → full-resolution disparity (H×W),
-     via plain bilinear x4 upsampling of the GRU's 1/4-scale output
-     (paper + Architecture Report), so predictions are already at the
-     target resolution (360×720).
-  3. Computes paper metrics at full resolution against the 360×720 GT:
+  1. Loads a checkpoint onto CPU/CUDA.
+  2. Runs test_mode=True inference → spatially full-resolution disparity
+     (H×W) via plain bilinear x4 upsampling of the GRU's 1/4-scale output.
+  3. Scales predictions from 1/4-scale pixel units to full-scale pixel units
+     by multiplying by upsample_scale (=4). This is required because:
+       - train_booster.py's downsample_gt() divides GT by 4 before the loss,
+         so the GRU learned to predict disparity in 1/4-scale pixel units.
+       - test_mode=True (cleardepth_net.py) only upsamples the spatial grid;
+         it does NOT multiply disparity values by upsample_scale.
+       - BoosterDataset GT is in full-scale pixel units (width/4112 rescaled).
+     Multiplying predictions by upsample_scale aligns both sides to
+     full-scale pixel units, giving physically meaningful metrics.
+  4. Computes paper metrics at full resolution:
        AvgErr | RMS | Bad-0.5 | Bad-1.0 | Bad-2.0 | Bad-4.0
-  4. Saves 4-panel PNG figures per sample (left | pred | GT | error).
-  5. Writes evaluation_results.txt with per-scene and averaged metrics.
-
-Aligned with updated ClearDepthNet:
-  - test_mode=True returns (B, 1, H, W) at the full training resolution.
-  - No manual upsampling needed; compare directly with full-res GT.
-  - n_gru_iters uses cfg.gru.n_gru_iters_eval (=32) unless overridden.
+  5. Saves 4-panel PNG figures per sample (left | pred | GT | error).
+  6. Writes evaluation_results.txt with per-scene and averaged metrics.
 
 Run:
     python scripts/evaluate_booster.py \\
-        --ckpt checkpoints/booster/best.pt \\
-        --data_root /data/booster_gt \\
+        --ckpt /data/booster_checkpoints/best.pt \\
+        --data_root /data/datasets/booster \\
+        --height 256 --width 512 \\
         --output_dir eval_results/booster
 """
 
@@ -211,9 +214,10 @@ def evaluate(args: argparse.Namespace):
 
     # ── Config & model ────────────────────────────────────────────────────
     cfg = OmegaConf.load(args.config)
-    n_gru_iters = args.n_gru_iters or cfg.gru.n_gru_iters_eval
-    max_disp    = float(cfg.max_disp)
-    log.info(f"n_gru_iters (eval)={n_gru_iters}  max_disp={max_disp}")
+    n_gru_iters    = args.n_gru_iters or cfg.gru.n_gru_iters_eval
+    max_disp       = float(cfg.max_disp)
+    upsample_scale = int(cfg.upsample.scale)   # =4; used to rescale predictions
+    log.info(f"n_gru_iters (eval)={n_gru_iters}  max_disp={max_disp}  upsample_scale={upsample_scale}")
 
     model = build_model(cfg, n_gru_iters).to(device)
 
@@ -264,9 +268,13 @@ def evaluate(args: argparse.Namespace):
         mask  = batch['mask'].to(device)         # (B, 1, H, W) binary
 
         with torch.no_grad():
-            # test_mode=True → full-resolution disparity (B, 1, H, W)
-            # via plain bilinear x4 upsampling; no manual rescaling needed
+            # test_mode=True → spatially full-resolution (B, 1, H, W) via
+            # bilinear x4, but disparity VALUES are still in 1/4-scale px
+            # units (the GRU was trained with GT divided by upsample_scale).
+            # Multiply by upsample_scale to convert to full-scale pixel units
+            # so predictions match BoosterDataset GT (width/4112 rescaled).
             pred = model(left, right, n_iters=n_gru_iters, test_mode=True)
+            pred = pred * upsample_scale
 
         B = pred.shape[0]
         for b in range(B):
