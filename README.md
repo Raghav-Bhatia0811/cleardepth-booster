@@ -112,7 +112,7 @@ Scene Flow Monkaa          Booster GT
         │                        │
         ▼                        ▼
 pretrain_sceneflow.py  ──►  train_booster.py
-  300K steps, AdamW            50K steps, AdamW
+  50K steps, AdamW            20K steps, AdamW
   1/4-scale sequence loss      fine-tune from SceneFlow ckpt
         │                        │
         ▼                        ▼
